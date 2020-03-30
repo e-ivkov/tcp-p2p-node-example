@@ -18,14 +18,20 @@ const TX_SIZE: usize = 200;
 
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
 enum Message {
-    Ping(Vec<u8>),
-    Pong(Vec<u8>),
+    Ping(Ping),
+    Pong(Ping),
     Tx(Vec<u8>),
     AddPeer(SocketAddr),
     NewPeer(Peer),
 }
 
-#[derive(Serialize, Deserialize, PartialEq, Debug)]
+#[derive(Serialize, Deserialize, PartialEq, Debug, Clone, Hash)]
+struct Ping {
+    payload: Vec<u8>,
+    peer: Peer,
+}
+
+#[derive(Serialize, Deserialize, PartialEq, Debug, Clone, Hash)]
 struct Peer {
     listen_port: u16,
 }
@@ -34,10 +40,23 @@ use chashmap::CHashMap;
 use rand::distributions::Standard;
 use rand::{thread_rng, Rng};
 use std::net::IpAddr;
+use std::time::SystemTime;
 
 pub fn gen_random_bytes(n_bytes: usize) -> Vec<u8> {
     let rng = thread_rng();
     rng.sample_iter(Standard).take(n_bytes).collect()
+}
+
+pub fn current_time() -> Duration {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .expect("Failed to get duration since UNIX_EPOCH.")
+}
+
+pub fn addr_with_port(address: SocketAddr, port: u16) -> SocketAddr {
+    let mut address = address;
+    address.set_port(port);
+    address
 }
 
 async fn async_main() -> io::Result<()> {
@@ -76,6 +95,7 @@ struct Node {
     //It's a hash set, done with hashmap
     peers: CHashMap<SocketAddr, SocketAddr>,
     listen_address: SocketAddr,
+    sent_pings: CHashMap<Ping, Duration>,
 }
 
 impl Node {
@@ -83,6 +103,7 @@ impl Node {
         Node {
             peers: CHashMap::new(),
             listen_address,
+            sent_pings: CHashMap::new(),
         }
     }
 
@@ -123,7 +144,26 @@ impl Node {
 
     async fn broadcast(&self, message: &Message) -> io::Result<()> {
         for (peer, _) in self.peers.clone() {
-            Node::send(message, peer).await?
+            Node::send(message, peer).await?;
+        }
+        Ok(())
+    }
+
+    async fn ping(&mut self, address: SocketAddr) -> io::Result<()> {
+        //TODO: add receiver address to ping payload?
+        let ping = Ping {
+            payload: gen_random_bytes(PING_SIZE),
+            peer: Peer {
+                listen_port: self.listen_address.port(),
+            },
+        };
+        self.sent_pings.insert(ping.clone(), current_time());
+        Node::send(&Message::Ping(ping), address).await
+    }
+
+    async fn ping_all(&mut self) -> io::Result<()> {
+        for (peer, _) in self.peers.clone() {
+            self.ping(peer).await?;
         }
         Ok(())
     }
@@ -133,8 +173,26 @@ impl Node {
             bincode::deserialize(bytes).expect("Failed to deserialize a message.");
         println!("Got {:?}", message);
         match message {
-            Message::Ping(bytes) => (),
-            Message::Pong(bytes) => unimplemented!(),
+            Message::Ping(ping) => {
+                Node::send(
+                    &Message::Pong(ping.clone()),
+                    addr_with_port(stream.peer_addr()?, ping.peer.listen_port),
+                )
+                .await?;
+            }
+            Message::Pong(ping) => {
+                if self.sent_pings.contains_key(&ping) {
+                    let sent_time = self
+                        .sent_pings
+                        .get(&ping)
+                        .expect("Failed to get sent ping entry.");
+                    println!(
+                        "Ping to {:?} returned in {:?}.",
+                        ping.peer,
+                        current_time() - sent_time.to_owned()
+                    )
+                }
+            }
             Message::Tx(bytes) => unimplemented!(),
             Message::NewPeer(peer) => {
                 let mut peer_address = stream.peer_addr()?;
