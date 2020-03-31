@@ -482,6 +482,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "p2p_node_stats"
+version = "0.1.0"
+source = "git+https://github.com/eadventurous/p2p-node-stats#1b6b0d296b6a70c59b207f854c9fbc36fd0f9508"
+dependencies = [
+ "chashmap",
+]
+
+[[package]]
 name = "parking_lot"
 version = "0.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -738,6 +746,7 @@ dependencies = [
  "chashmap",
  "clap",
  "futures",
+ "p2p_node_stats",
  "rand 0.7.3",
  "serde",
 ]

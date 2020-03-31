@@ -9,6 +9,7 @@ use futures::{
     select,
     task::{self, Poll},
 };
+use p2p_node_stats::{PushLossy, Stats};
 use serde::{Deserialize, Serialize};
 use std::{io, net::SocketAddr, time::Duration};
 
@@ -43,6 +44,7 @@ pub struct Node {
     peers: CHashMap<SocketAddr, SocketAddr>,
     listen_address: SocketAddr,
     sent_pings: CHashMap<Ping, Duration>,
+    stats: Stats,
 }
 
 impl Node {
@@ -51,6 +53,7 @@ impl Node {
             peers: CHashMap::new(),
             listen_address,
             sent_pings: CHashMap::new(),
+            stats: Stats::new(100, listen_address.to_string()),
         }
     }
 
@@ -83,6 +86,7 @@ impl Node {
                     },
             };
         }
+        self.stats.save_to_file("stats.txt")?;
         Ok(())
     }
 
@@ -165,11 +169,8 @@ impl Node {
                         .sent_pings
                         .get(&ping)
                         .expect("Failed to get sent ping entry.");
-                    println!(
-                        "Ping to {:?} returned in {:?}.",
-                        ping.peer,
-                        current_time() - sent_time.to_owned()
-                    )
+                    let rtt = current_time() - sent_time.to_owned();
+                    println!("Ping to {:?} returned in {:?}.", ping.peer, rtt);
                 }
             }
             Message::Tx(bytes) => (),
