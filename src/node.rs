@@ -24,6 +24,7 @@ enum Message {
     Tx(Vec<u8>),
     AddPeer(SocketAddr),
     NewPeer(Peer),
+    RemovePeer(Peer),
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone, Hash)]
@@ -55,19 +56,34 @@ impl Node {
 
     pub async fn start(&self) -> io::Result<()> {
         let listen_future = self.listen().fuse();
-        let mut interval = async_std::stream::interval(Duration::from_secs(15));
+        let mut tx_interval = async_std::stream::interval(Duration::from_secs(10));
+        let mut ping_interval = async_std::stream::interval(Duration::from_secs(15));
+        let mut exit_interval = async_std::stream::interval(Duration::from_secs(100));
 
         pin_mut!(listen_future);
 
         loop {
-            let interval_future = interval.next().fuse();
-            pin_mut!(interval_future);
+            let ping_future = ping_interval.next().fuse();
+            let tx_future = tx_interval.next().fuse();
+            let exit_future = exit_interval.next().fuse();
+
+            pin_mut!(ping_future, tx_future, exit_future);
 
             select! {
-                listen = listen_future => unreachable!(),
-                ping = interval_future => self.ping_all().await?,
+                    listen = listen_future => unreachable!(),
+                    ping = ping_future => self.ping_all().await?,
+                    tx = tx_future => self.broadcast(&Message::Tx(gen_random_bytes(64))).await?,
+                    exit = exit_future => {
+                        self.broadcast(&Message::RemovePeer(Peer {
+                            listen_port: self.listen_address.port(),
+                        }))
+                        .await?;
+                        println!("Shutting down.");
+                        break;
+                    },
             };
         }
+        Ok(())
     }
 
     async fn listen(&self) -> io::Result<()> {
@@ -156,7 +172,7 @@ impl Node {
                     )
                 }
             }
-            Message::Tx(bytes) => unimplemented!(),
+            Message::Tx(bytes) => (),
             Message::NewPeer(peer) => {
                 let mut peer_address = stream.peer_addr()?;
                 peer_address.set_port(peer.listen_port);
@@ -184,6 +200,11 @@ impl Node {
             Message::AddPeer(address) => {
                 self.peers.insert(address, address);
                 println!("Added peer {}", address);
+            }
+            Message::RemovePeer(peer) => {
+                let peer_address = addr_with_port(stream.peer_addr()?, peer.listen_port);
+                self.peers.remove(&peer_address);
+                println!("Removed peer {}", peer_address);
             }
         }
         Ok(())
