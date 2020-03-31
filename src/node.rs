@@ -1,9 +1,14 @@
 use crate::helper_fns::*;
-use async_std::{
-    net::{TcpListener, TcpStream},
-    prelude::*,
-};
+use async_std::net::{TcpListener, TcpStream};
 use chashmap::CHashMap;
+use futures::future::Ready;
+use futures::{
+    future::FutureExt,
+    pin_mut,
+    prelude::*,
+    select,
+    task::{self, Poll},
+};
 use serde::{Deserialize, Serialize};
 use std::{io, net::SocketAddr, time::Duration};
 
@@ -48,7 +53,24 @@ impl Node {
         }
     }
 
-    pub async fn start(&mut self) -> io::Result<()> {
+    pub async fn start(&self) -> io::Result<()> {
+        let listen_future = self.listen().fuse();
+        let mut interval = async_std::stream::interval(Duration::from_secs(15));
+
+        pin_mut!(listen_future);
+
+        loop {
+            let interval_future = interval.next().fuse();
+            pin_mut!(interval_future);
+
+            select! {
+                listen = listen_future => unreachable!(),
+                ping = interval_future => self.ping_all().await?,
+            };
+        }
+    }
+
+    async fn listen(&self) -> io::Result<()> {
         let listener = TcpListener::bind(self.listen_address).await?;
         let mut incoming = listener.incoming();
         println!("Listening on {}", self.listen_address);
@@ -63,7 +85,7 @@ impl Node {
         Ok(())
     }
 
-    pub async fn start_and_connect(&mut self, peer_address: &str) -> io::Result<()> {
+    pub async fn start_and_connect(&self, peer_address: &str) -> io::Result<()> {
         let peer_address = peer_address.parse().expect("Failed to parse peer ip.");
         self.peers.insert(peer_address, peer_address);
         let message = Message::NewPeer(Peer {
@@ -90,7 +112,7 @@ impl Node {
         Ok(())
     }
 
-    async fn ping(&mut self, address: SocketAddr) -> io::Result<()> {
+    async fn ping(&self, address: SocketAddr) -> io::Result<()> {
         //TODO: add receiver address to ping payload?
         let ping = Ping {
             payload: gen_random_bytes(PING_SIZE),
@@ -102,14 +124,14 @@ impl Node {
         Node::send(&Message::Ping(ping), address).await
     }
 
-    async fn ping_all(&mut self) -> io::Result<()> {
+    async fn ping_all(&self) -> io::Result<()> {
         for (peer, _) in self.peers.clone() {
             self.ping(peer).await?;
         }
         Ok(())
     }
 
-    async fn handle_message(&mut self, bytes: &[u8], stream: &mut TcpStream) -> io::Result<()> {
+    async fn handle_message(&self, bytes: &[u8], stream: &mut TcpStream) -> io::Result<()> {
         let message: Message =
             bincode::deserialize(bytes).expect("Failed to deserialize a message.");
         println!("Got {:?}", message);
