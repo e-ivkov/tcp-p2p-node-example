@@ -7,9 +7,8 @@ use serde::{Deserialize, Serialize};
 use std::{io, net::SocketAddr, time::Duration};
 
 // Buffer size in bytes.
-const BUFFER_SIZE: usize = 512;
+const BUFFER_SIZE: usize = 2024;
 const PING_SIZE: usize = 32;
-const TX_SIZE: usize = 200;
 
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
 enum Message {
@@ -46,23 +45,36 @@ pub struct Node {
     listen_address: SocketAddr,
     sent_pings: CHashMap<Ping, Duration>,
     stats: Stats,
+    tx_bytes: usize,
+    tx_interval_sec: usize,
+    node_ttl: f64,
 }
 
 impl Node {
-    pub fn new(listen_address: SocketAddr) -> Node {
+    pub fn new(
+        listen_address: SocketAddr,
+        tx_bytes: usize,
+        tx_interval_sec: usize,
+        node_ttl: f64,
+        stats_window_size: usize,
+    ) -> Node {
         Node {
             peers: CHashMap::new(),
             listen_address,
             sent_pings: CHashMap::new(),
-            stats: Stats::new(100, listen_address.to_string()),
+            stats: Stats::new(stats_window_size, listen_address.to_string()),
+            tx_bytes,
+            tx_interval_sec,
+            node_ttl,
         }
     }
 
     pub async fn start(&self) -> io::Result<()> {
         let listen_future = self.listen().fuse();
-        let mut tx_interval = async_std::stream::interval(Duration::from_secs(10));
+        let mut tx_interval =
+            async_std::stream::interval(Duration::from_secs(self.tx_interval_sec as u64));
         let mut ping_interval = async_std::stream::interval(Duration::from_secs(15));
-        let mut exit_interval = async_std::stream::interval(Duration::from_secs(100));
+        let mut exit_interval = async_std::stream::interval(Duration::from_secs_f64(self.node_ttl));
 
         pin_mut!(listen_future);
 
@@ -93,7 +105,7 @@ impl Node {
 
     async fn broadcast_tx(&self) -> io::Result<()> {
         let tx = Tx {
-            payload: gen_random_bytes(TX_SIZE),
+            payload: gen_random_bytes(self.tx_bytes),
             peer: Peer {
                 listen_port: self.listen_address.port(),
             },
