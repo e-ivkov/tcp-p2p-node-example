@@ -70,13 +70,14 @@ impl Node {
     }
 
     pub async fn start(&self) -> io::Result<()> {
-        let listen_future = self.listen().fuse();
+        let listen_future = self.listen_and_reconnect().fuse();
+
+        pin_mut!(listen_future);
+
         let mut tx_interval =
             async_std::stream::interval(Duration::from_secs(self.tx_interval_sec as u64));
         let mut ping_interval = async_std::stream::interval(Duration::from_secs(15));
         let mut exit_interval = async_std::stream::interval(Duration::from_secs_f64(self.node_ttl));
-
-        pin_mut!(listen_future);
 
         loop {
             let ping_future = ping_interval.next().fuse();
@@ -115,11 +116,20 @@ impl Node {
         self.broadcast(&Message::Tx(tx)).await
     }
 
+    async fn listen_and_reconnect(&self) {
+        loop {
+            match self.listen().await {
+                Ok(_) => unreachable!(),
+                Err(_) => (),
+            }
+        }
+    }
+
     async fn listen(&self) -> io::Result<()> {
         let listener = TcpListener::bind(self.listen_address).await?;
         let mut incoming = listener.incoming();
-        println!("Listening on {}", self.listen_address);
 
+        println!("Listening on {}", self.listen_address);
         while let Some(stream) = incoming.next().await {
             let mut stream = stream?;
             let mut buffer = [0u8; BUFFER_SIZE];
