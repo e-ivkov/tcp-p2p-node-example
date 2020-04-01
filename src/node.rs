@@ -76,7 +76,7 @@ impl Node {
             select! {
                     listen = listen_future => unreachable!(),
                     ping = ping_future => self.ping_all().await?,
-                    tx = tx_future => self.broadcast(&Message::Tx(self.gen_tx())).await?,
+                    tx = tx_future => self.broadcast_tx().await?,
                     exit = exit_future => {
                         self.broadcast(&Message::RemovePeer(Peer {
                             listen_port: self.listen_address.port(),
@@ -91,14 +91,16 @@ impl Node {
         Ok(())
     }
 
-    fn gen_tx(&self) -> Tx {
-        Tx {
+    async fn broadcast_tx(&self) -> io::Result<()> {
+        let tx = Tx {
             payload: gen_random_bytes(TX_SIZE),
             peer: Peer {
                 listen_port: self.listen_address.port(),
             },
             sent_time: current_time(),
-        }
+        };
+        println!("Sending tx.");
+        self.broadcast(&Message::Tx(tx)).await
     }
 
     async fn listen(&self) -> io::Result<()> {
@@ -132,7 +134,7 @@ impl Node {
         let serialized = bincode::serialize(message).expect("Failed to serialize a message.");
         stream.write_all(serialized.as_ref()).await?;
         stream.flush().await?;
-        println!("Sent {:?} to {}", message, stream.peer_addr()?);
+        //println!("Sent {:?} to {}", message, stream.peer_addr()?);
         Ok(())
     }
 
@@ -167,7 +169,7 @@ impl Node {
     async fn handle_message(&self, bytes: &[u8], stream: &mut TcpStream) -> io::Result<()> {
         let message: Message =
             bincode::deserialize(bytes).expect("Failed to deserialize a message.");
-        println!("Got {:?}", message);
+        //println!("Got {:?}", message);
         match message {
             Message::Ping(ping) => {
                 Node::send(
@@ -193,6 +195,7 @@ impl Node {
                 let peer_address =
                     addr_with_port(stream.peer_addr()?, tx.peer.listen_port).to_string();
                 let time = current_time() - tx.sent_time;
+                println!("Received tx from {} in {:?}", peer_address, time);
                 self.stats
                     .add_transmission(peer_address, time, tx.payload.len() as u32);
             }
