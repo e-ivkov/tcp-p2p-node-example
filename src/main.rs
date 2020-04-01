@@ -34,7 +34,7 @@ async fn async_main() -> io::Result<()> {
         .get_matches();
     let port = value_t!(matches, "port", u16).unwrap_or(LISTEN_ON_PORT);
     let listen_address = SocketAddr::new(LISTEN_ON_IP.parse().expect("Failed to parse ip."), port);
-    let mut node = Node::new(listen_address);
+    let node = Node::new(listen_address);
     match matches.value_of("connect") {
         Some(address) => node.start_and_connect(address).await?,
         None => node.start().await?,

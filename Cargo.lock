@@ -484,7 +484,7 @@ dependencies = [
 [[package]]
 name = "p2p_node_stats"
 version = "0.1.0"
-source = "git+https://github.com/eadventurous/p2p-node-stats#1b6b0d296b6a70c59b207f854c9fbc36fd0f9508"
+source = "git+https://github.com/eadventurous/p2p-node-stats#26ef797987d0a11c48c7c3481188652d2a9e5977"
 dependencies = [
  "chashmap",
 ]

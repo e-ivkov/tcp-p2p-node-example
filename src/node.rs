@@ -1,15 +1,8 @@
 use crate::helper_fns::*;
 use async_std::net::{TcpListener, TcpStream};
 use chashmap::CHashMap;
-use futures::future::Ready;
-use futures::{
-    future::FutureExt,
-    pin_mut,
-    prelude::*,
-    select,
-    task::{self, Poll},
-};
-use p2p_node_stats::{PushLossy, Stats};
+use futures::{future::FutureExt, pin_mut, prelude::*, select};
+use p2p_node_stats::Stats;
 use serde::{Deserialize, Serialize};
 use std::{io, net::SocketAddr, time::Duration};
 
@@ -22,16 +15,24 @@ const TX_SIZE: usize = 200;
 enum Message {
     Ping(Ping),
     Pong(Ping),
-    Tx(Vec<u8>),
+    Tx(Tx),
     AddPeer(SocketAddr),
     NewPeer(Peer),
     RemovePeer(Peer),
 }
 
+#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
+struct Tx {
+    payload: Vec<u8>,
+    peer: Peer,
+    sent_time: Duration,
+}
+
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone, Hash)]
 struct Ping {
     payload: Vec<u8>,
-    peer: Peer,
+    to_peer: Peer,
+    from_peer: Peer,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone, Hash)]
@@ -75,7 +76,7 @@ impl Node {
             select! {
                     listen = listen_future => unreachable!(),
                     ping = ping_future => self.ping_all().await?,
-                    tx = tx_future => self.broadcast(&Message::Tx(gen_random_bytes(64))).await?,
+                    tx = tx_future => self.broadcast(&Message::Tx(self.gen_tx())).await?,
                     exit = exit_future => {
                         self.broadcast(&Message::RemovePeer(Peer {
                             listen_port: self.listen_address.port(),
@@ -88,6 +89,16 @@ impl Node {
         }
         self.stats.save_to_file("stats.txt")?;
         Ok(())
+    }
+
+    fn gen_tx(&self) -> Tx {
+        Tx {
+            payload: gen_random_bytes(TX_SIZE),
+            peer: Peer {
+                listen_port: self.listen_address.port(),
+            },
+            sent_time: current_time(),
+        }
     }
 
     async fn listen(&self) -> io::Result<()> {
@@ -133,10 +144,12 @@ impl Node {
     }
 
     async fn ping(&self, address: SocketAddr) -> io::Result<()> {
-        //TODO: add receiver address to ping payload?
         let ping = Ping {
             payload: gen_random_bytes(PING_SIZE),
-            peer: Peer {
+            to_peer: Peer {
+                listen_port: address.port(),
+            },
+            from_peer: Peer {
                 listen_port: self.listen_address.port(),
             },
         };
@@ -159,7 +172,7 @@ impl Node {
             Message::Ping(ping) => {
                 Node::send(
                     &Message::Pong(ping.clone()),
-                    addr_with_port(stream.peer_addr()?, ping.peer.listen_port),
+                    addr_with_port(stream.peer_addr()?, ping.from_peer.listen_port),
                 )
                 .await?;
             }
@@ -169,11 +182,20 @@ impl Node {
                         .sent_pings
                         .get(&ping)
                         .expect("Failed to get sent ping entry.");
+                    let peer_address =
+                        addr_with_port(stream.peer_addr()?, ping.to_peer.listen_port).to_string();
                     let rtt = current_time() - sent_time.to_owned();
-                    println!("Ping to {:?} returned in {:?}.", ping.peer, rtt);
+                    self.stats.add_ping(peer_address.clone(), rtt);
+                    println!("Ping to {} returned in {:?}.", peer_address, rtt);
                 }
             }
-            Message::Tx(bytes) => (),
+            Message::Tx(tx) => {
+                let peer_address =
+                    addr_with_port(stream.peer_addr()?, tx.peer.listen_port).to_string();
+                let time = current_time() - tx.sent_time;
+                self.stats
+                    .add_transmission(peer_address, time, tx.payload.len() as u32);
+            }
             Message::NewPeer(peer) => {
                 let mut peer_address = stream.peer_addr()?;
                 peer_address.set_port(peer.listen_port);
