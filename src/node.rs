@@ -95,7 +95,7 @@ impl Node {
                             listen_port: self.listen_address.port(),
                         }))
                         .await?;
-                        println!("Shutting down.");
+                        info!("Shutting down.");
                         break;
                     },
             };
@@ -112,7 +112,7 @@ impl Node {
             },
             sent_time: current_time(),
         };
-        println!("Sending tx.");
+        info!("Sending tx.");
         self.broadcast(&Message::Tx(tx)).await
     }
 
@@ -156,7 +156,7 @@ impl Node {
         let serialized = bincode::serialize(message).expect("Failed to serialize a message.");
         stream.write_all(serialized.as_ref()).await?;
         stream.flush().await?;
-        //println!("Sent {:?} to {}", message, stream.peer_addr()?);
+        //info!("Sent {:?} to {}", message, stream.peer_addr()?);
         Ok(())
     }
 
@@ -191,7 +191,7 @@ impl Node {
     async fn handle_message(&self, bytes: &[u8], stream: &mut TcpStream) -> io::Result<()> {
         let message: Message =
             bincode::deserialize(bytes).expect("Failed to deserialize a message.");
-        //println!("Got {:?}", message);
+        //info!("Got {:?}", message);
         match message {
             Message::Ping(ping) => {
                 Node::send(
@@ -210,49 +210,49 @@ impl Node {
                         addr_with_port(stream.peer_addr()?, ping.to_peer.listen_port).to_string();
                     let rtt = current_time() - sent_time.to_owned();
                     self.stats.add_ping(peer_address.clone(), rtt);
-                    println!("Ping to {} returned in {:?}.", peer_address, rtt);
+                    info!("Ping to {} returned in {:?}.", peer_address, rtt);
                 }
             }
             Message::Tx(tx) => {
                 let peer_address =
                     addr_with_port(stream.peer_addr()?, tx.peer.listen_port).to_string();
                 let time = current_time() - tx.sent_time;
-                println!("Received tx from {} in {:?}", peer_address, time);
+                info!("Received tx from {} in {:?}", peer_address, time);
                 self.stats
                     .add_transmission(peer_address, time, tx.payload.len() as u32);
             }
             Message::NewPeer(peer) => {
                 let mut peer_address = stream.peer_addr()?;
                 peer_address.set_port(peer.listen_port);
-                println!(
+                info!(
                     "Received request to add new peer {} to swarm.",
                     peer_address
                 );
 
                 //tell new node about other peers
-                println!("Telling new node about other peers.");
+                info!("Telling new node about other peers.");
                 for (peer, _) in self.peers.clone() {
                     let message = Message::AddPeer(peer);
                     Node::send(&message, peer_address).await?
                 }
 
                 //tell other peers about the new node
-                println!("Telling other peers about new node.");
+                info!("Telling other peers about new node.");
                 let message = Message::AddPeer(peer_address);
                 self.broadcast(&message).await?;
 
                 //remember new node
                 self.peers.insert(peer_address, peer_address);
-                println!("Added peer {}", peer_address);
+                info!("Added peer {}", peer_address);
             }
             Message::AddPeer(address) => {
                 self.peers.insert(address, address);
-                println!("Added peer {}", address);
+                info!("Added peer {}", address);
             }
             Message::RemovePeer(peer) => {
                 let peer_address = addr_with_port(stream.peer_addr()?, peer.listen_port);
                 self.peers.remove(&peer_address);
-                println!("Removed peer {}", peer_address);
+                info!("Removed peer {}", peer_address);
             }
         }
         Ok(())

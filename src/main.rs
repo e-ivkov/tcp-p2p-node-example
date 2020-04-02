@@ -7,6 +7,9 @@ use clap::{value_t, App, Arg};
 pub mod helper_fns;
 pub mod node;
 
+#[macro_use]
+extern crate log;
+
 const LISTEN_ON_IP: &str = "127.0.0.1";
 const LISTEN_ON_PORT: u16 = 7878;
 
@@ -21,6 +24,7 @@ const NODE_TTL: f64 = 1000.0;
 pub const STATS_WINDOW_SIZE: usize = 100;
 
 async fn async_main() -> io::Result<()> {
+    env_logger::init();
     let matches = App::new("TCP p2p example node")
         .version("0.1")
         .author("Egor Ivkov e.o.ivkov@gmail.com")
