@@ -23,6 +23,9 @@ const NODE_TTL: f64 = 1000.0;
 //window size of requests to store and use for statistics
 pub const STATS_WINDOW_SIZE: usize = 100;
 
+const TCP_PROTOCOL: &str = "tcp";
+const QUIC_PROTOCOL: &str = "quic";
+
 #[tokio::main]
 async fn main() -> io::Result<()> {
     env_logger::init();
@@ -75,6 +78,16 @@ async fn main() -> io::Result<()> {
                 .help("Number of requests/responses that the stats struct stores to calculate mean.")
                 .takes_value(true)
         )
+        .arg(
+            Arg::with_name("transport")
+                .short("t")
+                .long("transport")
+                .value_name("transport_protocol")
+                .help("Choose transport layer protocol. Either TCP or QUIC.")
+                .default_value("tcp")
+                .possible_values([TCP_PROTOCOL, QUIC_PROTOCOL].as_ref())
+                .takes_value(true)
+        )
         .get_matches();
 
     let tx_bytes = value_t!(matches, "tx_bytes", usize).unwrap_or(TX_BYTES);
@@ -85,12 +98,18 @@ async fn main() -> io::Result<()> {
 
     let port = value_t!(matches, "port", u16).unwrap_or(LISTEN_ON_PORT);
     let listen_address = SocketAddr::new(LISTEN_ON_IP.parse().expect("Failed to parse ip."), port);
+    let use_quic = match matches.value_of("transport") {
+        Some(TCP_PROTOCOL) => false,
+        Some(QUIC_PROTOCOL) => true,
+        _ => false,
+    };
     let node = Node::new(
         listen_address,
         tx_bytes,
         tx_interval_sec,
         node_ttl,
         stats_window_size,
+        use_quic,
     );
     match matches.value_of("connect") {
         Some(address) => node.start_and_connect(address).await?,

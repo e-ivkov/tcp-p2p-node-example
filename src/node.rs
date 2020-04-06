@@ -59,6 +59,7 @@ impl Node {
         tx_interval_sec: usize,
         node_ttl: f64,
         stats_window_size: usize,
+        use_quic: bool,
     ) -> Node {
         Node {
             peers: CHashMap::new(),
@@ -68,7 +69,7 @@ impl Node {
             tx_bytes,
             tx_interval_sec,
             node_ttl,
-            quic: true,
+            quic: use_quic,
         }
     }
 
@@ -139,7 +140,7 @@ impl Node {
         let listener = TcpListener::bind(self.listen_address).await?;
         let mut incoming = listener.incoming();
 
-        println!("Listening on {}", self.listen_address);
+        println!("TCP: Listening on {}", self.listen_address);
         while let Some(stream) = incoming.next().await {
             let mut stream = stream?;
             let mut buffer = [0u8; BUFFER_SIZE];
@@ -154,7 +155,7 @@ impl Node {
         let (mut incoming, server_cert) = quinn_ext::make_server_endpoint(self.listen_address)
             .expect("Failed to initialize QUIC listener.");
 
-        println!("Listening on {}", self.listen_address);
+        println!("QUIC: Listening on {}", self.listen_address);
         while let Some(conn_stream) = incoming.next().await {
             let quinn::NewConnection {
                 connection,
@@ -162,13 +163,11 @@ impl Node {
                 ..
             } = conn_stream.await?;
             async {
-                info!("established");
                 // Each stream initiated by the client constitutes a new request.
                 while let Some(stream) = bi_streams.next().await {
                     let (mut send, mut recv): (quinn::SendStream, quinn::RecvStream) = match stream
                     {
                         Err(quinn::ConnectionError::ApplicationClosed { .. }) => {
-                            info!("connection closed");
                             return Ok(());
                         }
                         Err(e) => {
