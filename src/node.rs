@@ -152,7 +152,7 @@ impl Node {
     }
 
     async fn listen_quic(&self) -> io::Result<()> {
-        let (mut incoming, server_cert) = quinn_ext::make_server_endpoint(self.listen_address)
+        let (mut incoming, _server_cert) = quinn_ext::make_server_endpoint(self.listen_address)
             .expect("Failed to initialize QUIC listener.");
 
         println!("QUIC: Listening on {}", self.listen_address);
@@ -165,8 +165,7 @@ impl Node {
             async {
                 // Each stream initiated by the client constitutes a new request.
                 while let Some(stream) = bi_streams.next().await {
-                    let (mut send, mut recv): (quinn::SendStream, quinn::RecvStream) = match stream
-                    {
+                    let (_send, mut recv): (quinn::SendStream, quinn::RecvStream) = match stream {
                         Err(quinn::ConnectionError::ApplicationClosed { .. }) => {
                             return Ok(());
                         }
@@ -230,7 +229,7 @@ impl Node {
         let quinn::NewConnection {
             connection: conn, ..
         } = { new_conn };
-        let (mut send, recv) = conn
+        let (mut send, _recv) = conn
             .open_bi()
             .await
             .expect("QUIC: Failed to open write stream.");
