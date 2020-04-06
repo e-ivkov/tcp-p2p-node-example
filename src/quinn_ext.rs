@@ -23,8 +23,17 @@ pub fn make_client_endpoint(
     Ok(endpoint)
 }
 
-pub fn make_client_endpoint_untrusted(bind_addr: SocketAddr) -> Result<Endpoint, Box<dyn Error>> {
-    unimplemented!()
+pub fn make_client_endpoint_untrusted() -> Result<Endpoint, Box<dyn Error>> {
+    let client_cfg = configure_client_untrusted();
+    let mut endpoint_builder = Endpoint::builder();
+    endpoint_builder.default_client_config(client_cfg);
+
+    let (endpoint, _) = endpoint_builder.bind(
+        &"[::]:0"
+            .parse()
+            .expect("Failed to parse client endpoint bind address"),
+    )?;
+    Ok(endpoint)
 }
 
 /// Dummy certificate verifier that treats any certificate as valid.
