@@ -1,4 +1,3 @@
-use futures::executor::block_on;
 use std::{io, net::SocketAddr};
 extern crate clap;
 use crate::node::Node;
@@ -6,6 +5,7 @@ use clap::{value_t, App, Arg};
 
 pub mod helper_fns;
 pub mod node;
+pub mod quinn_ext;
 
 #[macro_use]
 extern crate log;
@@ -23,8 +23,10 @@ const NODE_TTL: f64 = 1000.0;
 //window size of requests to store and use for statistics
 pub const STATS_WINDOW_SIZE: usize = 100;
 
-async fn async_main() -> io::Result<()> {
+#[tokio::main]
+async fn main() -> io::Result<()> {
     env_logger::init();
+    //configure_client_untrusted();
     let matches = App::new("TCP p2p example node")
         .version("0.1")
         .author("Egor Ivkov e.o.ivkov@gmail.com")
@@ -95,8 +97,4 @@ async fn async_main() -> io::Result<()> {
         None => node.start().await?,
     }
     Ok(())
-}
-
-fn main() -> io::Result<()> {
-    block_on(async_main())
 }
