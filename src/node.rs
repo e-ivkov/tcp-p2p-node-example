@@ -127,8 +127,15 @@ impl Node {
             }
         }
     }
-
     async fn listen(&self) -> io::Result<()> {
+        if self.quic {
+            self.listen_quic().await
+        } else {
+            self.listen_tcp().await
+        }
+    }
+
+    async fn listen_tcp(&self) -> io::Result<()> {
         let listener = TcpListener::bind(self.listen_address).await?;
         let mut incoming = listener.incoming();
 
@@ -191,12 +198,20 @@ impl Node {
         let message = Message::NewPeer(Peer {
             listen_port: self.listen_address.port(),
         });
-        Node::send(&message, peer_address).await?;
+        self.send(&message, peer_address).await?;
         self.start().await?;
         Ok(())
     }
 
-    async fn send(message: &Message, address: SocketAddr) -> io::Result<()> {
+    async fn send(&self, message: &Message, address: SocketAddr) -> io::Result<()> {
+        if self.quic {
+            Self::send_quic(message, address).await
+        } else {
+            Self::send_tcp(message, address).await
+        }
+    }
+
+    async fn send_tcp(message: &Message, address: SocketAddr) -> io::Result<()> {
         let mut stream = TcpStream::connect(address).await?;
         let serialized = bincode::serialize(message).expect("Failed to serialize a message.");
         stream.write_all(serialized.as_ref()).await?;
@@ -205,9 +220,34 @@ impl Node {
         Ok(())
     }
 
+    async fn send_quic(message: &Message, address: SocketAddr) -> io::Result<()> {
+        let endpoint =
+            quinn_ext::make_client_endpoint_untrusted().expect("Failed to make client endpoint.");
+        let new_conn = endpoint
+            .connect(&address, "localhost")
+            .expect("QUIC: Failed to connect.")
+            .await
+            .expect("QUIC: Failed to connect.");
+        let quinn::NewConnection {
+            connection: conn, ..
+        } = { new_conn };
+        let (mut send, recv) = conn
+            .open_bi()
+            .await
+            .expect("QUIC: Failed to open write stream.");
+        let serialized = bincode::serialize(message).expect("Failed to serialize a message.");
+        send.write_all(serialized.as_slice())
+            .await
+            .expect("QUIC: Failed to send message");
+        send.finish().await.expect("QUIC: Failed to finish sending");
+        conn.close(0u32.into(), b"done");
+        //info!("Sent {:?} to {}", message, stream.peer_addr()?);
+        Ok(())
+    }
+
     async fn broadcast(&self, message: &Message) -> io::Result<()> {
         for (peer, _) in self.peers.clone() {
-            Node::send(message, peer).await?;
+            self.send(message, peer).await?;
         }
         Ok(())
     }
@@ -223,7 +263,7 @@ impl Node {
             },
         };
         self.sent_pings.insert(ping.clone(), current_time());
-        Node::send(&Message::Ping(ping), address).await
+        self.send(&Message::Ping(ping), address).await
     }
 
     async fn ping_all(&self) -> io::Result<()> {
@@ -239,7 +279,7 @@ impl Node {
         //info!("Got {:?}", message);
         match message {
             Message::Ping(ping) => {
-                Node::send(
+                self.send(
                     &Message::Pong(ping.clone()),
                     addr_with_port(remote_address, ping.from_peer.listen_port),
                 )
@@ -277,7 +317,7 @@ impl Node {
                 info!("Telling new node about other peers.");
                 for (peer, _) in self.peers.clone() {
                     let message = Message::AddPeer(peer);
-                    Node::send(&message, peer_address).await?
+                    self.send(&message, peer_address).await?
                 }
 
                 //tell other peers about the new node
