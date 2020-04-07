@@ -1,4 +1,5 @@
 use crate::helper_fns::*;
+use crate::quinn_ext;
 use async_std::net::{TcpListener, TcpStream};
 use chashmap::CHashMap;
 use futures::{future::FutureExt, pin_mut, prelude::*, select};
@@ -48,6 +49,7 @@ pub struct Node {
     tx_bytes: usize,
     tx_interval_sec: usize,
     node_ttl: f64,
+    quic: bool,
 }
 
 impl Node {
@@ -57,6 +59,7 @@ impl Node {
         tx_interval_sec: usize,
         node_ttl: f64,
         stats_window_size: usize,
+        use_quic: bool,
     ) -> Node {
         Node {
             peers: CHashMap::new(),
@@ -66,6 +69,7 @@ impl Node {
             tx_bytes,
             tx_interval_sec,
             node_ttl,
+            quic: use_quic,
         }
     }
 
@@ -124,18 +128,64 @@ impl Node {
             }
         }
     }
-
     async fn listen(&self) -> io::Result<()> {
+        if self.quic {
+            self.listen_quic().await
+        } else {
+            self.listen_tcp().await
+        }
+    }
+
+    async fn listen_tcp(&self) -> io::Result<()> {
         let listener = TcpListener::bind(self.listen_address).await?;
         let mut incoming = listener.incoming();
 
-        println!("Listening on {}", self.listen_address);
+        println!("TCP: Listening on {}", self.listen_address);
         while let Some(stream) = incoming.next().await {
             let mut stream = stream?;
             let mut buffer = [0u8; BUFFER_SIZE];
             let _read_size = stream.read(&mut buffer).await?;
-            self.handle_message(&buffer, &mut stream).await?;
+            self.handle_message(&buffer, stream.peer_addr()?).await?;
             stream.flush().await?;
+        }
+        Ok(())
+    }
+
+    async fn listen_quic(&self) -> io::Result<()> {
+        let (mut incoming, _server_cert) = quinn_ext::make_server_endpoint(self.listen_address)
+            .expect("Failed to initialize QUIC listener.");
+
+        println!("QUIC: Listening on {}", self.listen_address);
+        while let Some(conn_stream) = incoming.next().await {
+            let quinn::NewConnection {
+                connection,
+                mut bi_streams,
+                ..
+            } = conn_stream.await?;
+            async {
+                // Each stream initiated by the client constitutes a new request.
+                while let Some(stream) = bi_streams.next().await {
+                    let (_send, mut recv): (quinn::SendStream, quinn::RecvStream) = match stream {
+                        Err(quinn::ConnectionError::ApplicationClosed { .. }) => {
+                            return Ok(());
+                        }
+                        Err(e) => {
+                            return Err(e);
+                        }
+                        Ok(s) => s,
+                    };
+                    let mut buffer = [0u8; BUFFER_SIZE];
+                    let _read_size = recv
+                        .read(&mut buffer)
+                        .await
+                        .expect("Failed reading the incoming message.");
+                    self.handle_message(&buffer, connection.remote_address())
+                        .await
+                        .expect("Failed handling the incoming message.");
+                }
+                Ok(())
+            }
+            .await?;
         }
         Ok(())
     }
@@ -146,12 +196,20 @@ impl Node {
         let message = Message::NewPeer(Peer {
             listen_port: self.listen_address.port(),
         });
-        Node::send(&message, peer_address).await?;
+        self.send(&message, peer_address).await?;
         self.start().await?;
         Ok(())
     }
 
-    async fn send(message: &Message, address: SocketAddr) -> io::Result<()> {
+    async fn send(&self, message: &Message, address: SocketAddr) -> io::Result<()> {
+        if self.quic {
+            Self::send_quic(message, address).await
+        } else {
+            Self::send_tcp(message, address).await
+        }
+    }
+
+    async fn send_tcp(message: &Message, address: SocketAddr) -> io::Result<()> {
         let mut stream = TcpStream::connect(address).await?;
         let serialized = bincode::serialize(message).expect("Failed to serialize a message.");
         stream.write_all(serialized.as_ref()).await?;
@@ -160,9 +218,34 @@ impl Node {
         Ok(())
     }
 
+    async fn send_quic(message: &Message, address: SocketAddr) -> io::Result<()> {
+        let endpoint =
+            quinn_ext::make_client_endpoint_untrusted().expect("Failed to make client endpoint.");
+        let new_conn = endpoint
+            .connect(&address, "localhost")
+            .expect("QUIC: Failed to connect.")
+            .await
+            .expect("QUIC: Failed to connect.");
+        let quinn::NewConnection {
+            connection: conn, ..
+        } = { new_conn };
+        let (mut send, _recv) = conn
+            .open_bi()
+            .await
+            .expect("QUIC: Failed to open write stream.");
+        let serialized = bincode::serialize(message).expect("Failed to serialize a message.");
+        send.write_all(serialized.as_slice())
+            .await
+            .expect("QUIC: Failed to send message");
+        send.finish().await.expect("QUIC: Failed to finish sending");
+        conn.close(0u32.into(), b"done");
+        //info!("Sent {:?} to {}", message, stream.peer_addr()?);
+        Ok(())
+    }
+
     async fn broadcast(&self, message: &Message) -> io::Result<()> {
         for (peer, _) in self.peers.clone() {
-            Node::send(message, peer).await?;
+            self.send(message, peer).await?;
         }
         Ok(())
     }
@@ -178,7 +261,7 @@ impl Node {
             },
         };
         self.sent_pings.insert(ping.clone(), current_time());
-        Node::send(&Message::Ping(ping), address).await
+        self.send(&Message::Ping(ping), address).await
     }
 
     async fn ping_all(&self) -> io::Result<()> {
@@ -188,15 +271,15 @@ impl Node {
         Ok(())
     }
 
-    async fn handle_message(&self, bytes: &[u8], stream: &mut TcpStream) -> io::Result<()> {
+    async fn handle_message(&self, bytes: &[u8], remote_address: SocketAddr) -> io::Result<()> {
         let message: Message =
             bincode::deserialize(bytes).expect("Failed to deserialize a message.");
         //info!("Got {:?}", message);
         match message {
             Message::Ping(ping) => {
-                Node::send(
+                self.send(
                     &Message::Pong(ping.clone()),
-                    addr_with_port(stream.peer_addr()?, ping.from_peer.listen_port),
+                    addr_with_port(remote_address, ping.from_peer.listen_port),
                 )
                 .await?;
             }
@@ -207,22 +290,21 @@ impl Node {
                         .get(&ping)
                         .expect("Failed to get sent ping entry.");
                     let peer_address =
-                        addr_with_port(stream.peer_addr()?, ping.to_peer.listen_port).to_string();
+                        addr_with_port(remote_address, ping.to_peer.listen_port).to_string();
                     let rtt = current_time() - sent_time.to_owned();
                     self.stats.add_ping(peer_address.clone(), rtt);
                     info!("Ping to {} returned in {:?}.", peer_address, rtt);
                 }
             }
             Message::Tx(tx) => {
-                let peer_address =
-                    addr_with_port(stream.peer_addr()?, tx.peer.listen_port).to_string();
+                let peer_address = addr_with_port(remote_address, tx.peer.listen_port).to_string();
                 let time = current_time() - tx.sent_time;
                 info!("Received tx from {} in {:?}", peer_address, time);
                 self.stats
                     .add_transmission(peer_address, time, tx.payload.len() as u32);
             }
             Message::NewPeer(peer) => {
-                let mut peer_address = stream.peer_addr()?;
+                let mut peer_address = remote_address;
                 peer_address.set_port(peer.listen_port);
                 info!(
                     "Received request to add new peer {} to swarm.",
@@ -233,7 +315,7 @@ impl Node {
                 info!("Telling new node about other peers.");
                 for (peer, _) in self.peers.clone() {
                     let message = Message::AddPeer(peer);
-                    Node::send(&message, peer_address).await?
+                    self.send(&message, peer_address).await?
                 }
 
                 //tell other peers about the new node
@@ -250,7 +332,7 @@ impl Node {
                 info!("Added peer {}", address);
             }
             Message::RemovePeer(peer) => {
-                let peer_address = addr_with_port(stream.peer_addr()?, peer.listen_port);
+                let peer_address = addr_with_port(remote_address, peer.listen_port);
                 self.peers.remove(&peer_address);
                 info!("Removed peer {}", peer_address);
             }

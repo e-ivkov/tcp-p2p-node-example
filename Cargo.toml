@@ -16,6 +16,14 @@ p2p_node_stats = { git = "https://github.com/eadventurous/p2p-node-stats"}
 log = "0.4.0"
 env_logger = "0.7.1"
 
+# quinn deps
+rustls = { version = "0.17", features = ["quic", "dangerous_configuration"]}
+webpki = { version = "0.21"}
+rcgen = "0.8"
+quinn = {version = "0.6.1", features = ["rustls"] } # needs tokio context to function properly
+tokio = { version = "0.2", features = ["rt-core", "rt-threaded", "macros"] }
+
+
 [dependencies.serde]
 version = "1.0.105"
 features = ["derive"]
